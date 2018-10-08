@@ -8,8 +8,15 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define DISPLAY_STRING
+#include <math.h>
 
+
+#define DISPLAY_STRING
+union float_packet{
+		float float_value;
+		char byte_array[4];
+};
+	
 int set_interface_attribs(int fd, int speed)
 {
 	struct termios tty;
@@ -78,22 +85,43 @@ int main(int argc, char const *argv[])
 	//set_mincount(fd, 0);                /* set to pure timed read */
 
 	/* simple noncanonical input */
+
+
+	float value = 0;
+	union float_packet temp_packet;
+	int packet_idx = 0;
+	const int in_packet_len = 4;
+	const int out_packet_len = 4;
+
 	do {
-		unsigned char buf[80];
+		unsigned char temp_byte;
 		int rdlen;
 
-		rdlen = read(fd, buf, sizeof(buf) - 1);
+		rdlen = read(fd, &temp_byte, 1);	// Read one byte
 		if (rdlen > 0) {
-#ifdef DISPLAY_STRING
-			buf[rdlen - 1] = 0; // Overiding buf[rdlen-1] removed newline character
-			printf("Read %d: \"%s\"\n", rdlen, buf);
-#endif
 
-			wlen = write(fd, buf, rdlen);
-			if (wlen != rdlen) {
-				printf("Error from write: %d, %d\n", wlen, errno);
-				return 999;
+			temp_packet.byte_array[packet_idx] = temp_byte;
+
+			++packet_idx;
+
+			if (packet_idx >= in_packet_len) {
+				value = temp_packet.float_value;
+
+				union float_packet sin_value;
+				sin_value.float_value = sin((double)value);
+
+				printf("%f\n", sin_value.float_value);
+
+				wlen = write(fd, sin_value.byte_array, out_packet_len);
+				if (wlen != out_packet_len) {
+					printf("Error from write: %d, %d\n", wlen, errno);
+					return 999;
+				}
+
+				packet_idx = 0;
 			}
+
+
 
 		} else if (rdlen < 0) {
 			printf("Error from read: %d: %s\n", rdlen, strerror(errno));

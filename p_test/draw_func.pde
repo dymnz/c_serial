@@ -13,8 +13,8 @@ final int [] RPY_maxValue = { +1, +1};
 int last_draw_idx = 0;
 int max_valid_buffer_idx = 0;
 
-int x = 0;
-int last_x = 0;
+float x = 0;
+float last_x = 0;
 
 int [] GT_last_height = new int[NN_channel];
 int [] NN_last_height = new int[NN_channel];
@@ -26,7 +26,14 @@ void drawAll() {
   max_valid_buffer_idx = get_max_valid_buffer_idx() % value_buffer_size;
 
   while (last_draw_idx < max_valid_buffer_idx) {
-
+    // Sanity check for synced NN-GT
+    for (int ch = 0; ch < NN_channel; ++ch) {
+      if (NN_buffer_idx[ch] != max_valid_buffer_idx || GT_buffer_idx[ch] != max_valid_buffer_idx) {
+        println("GT_buffer_idx!=NN_buffer_idx");
+        exit();
+      }
+    }
+    
     // Draw GT angles
     for (int i = 0; i < NN_channel; ++i) {
       stroke(GT_color_list[i][0], GT_color_list[i][1], GT_color_list[i][2]);
@@ -48,6 +55,7 @@ void drawAll() {
 
     last_x = x;
     x += graph_x_step;
+
   }
 
   if (x >= width) {
@@ -77,12 +85,5 @@ int get_max_valid_buffer_idx() {
     max_valid_idx = min(max_valid_idx, GT_buffer_idx[ch]);
   }
 
-  // Sanity check for synced NN-GT
-  for (int ch = 0; ch < NN_channel; ++ch) {
-    if (NN_buffer_idx[ch] != max_valid_idx || GT_buffer_idx[ch] != max_valid_idx) {
-      println("GT_buffer_idx!=NN_buffer_idx");
-      exit();
-    }
-  }
   return max_valid_idx;
 }
