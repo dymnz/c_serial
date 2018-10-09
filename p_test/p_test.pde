@@ -5,7 +5,7 @@
   Expected sine value is generated in the program. Angle in radian
   will be sent to NN every N pts. (N = Real_sample_rate/Target_sample_rate, i.e. downsample)
   NN_buffer will only be filled when GT_buffer_idx > NN_buffer_idx.
-  NOTE: In this case, GT_buffer_idx==NN_buffer_idx
+  NOTE: In this case, GT_buffer_idx > NN_buffer_idx
 
   When sending actual processed sEMG value, the past 500 semg samples that
   passed through:
@@ -15,11 +15,11 @@
 */
 
 import processing.serial.*;
-import java.nio.ByteBuffer; 
-import java.nio.ByteOrder; 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 enum SerialState {
-  HOLD, SEMG_ALIGN, MPU_ALIGN, SEMG_READ, MPU_READ, SEMG_FIN, MPU_FIN
+    HOLD, SEMG_ALIGN, MPU_ALIGN, SEMG_READ, MPU_READ, SEMG_FIN, MPU_FIN
 }
 
 SerialState AR_state = SerialState.HOLD;
@@ -54,7 +54,7 @@ int AR_align_cnt = 0;
 
 final int width = 1440;
 final int height = 900;
-final float graph_x_step = 0.4;
+final float graph_x_step = 4;
 
 final int sine_freq = 2000;
 float [] sine_data = new float [sine_freq];
@@ -64,8 +64,10 @@ final int NN_packet_len = 4;
 int [] NN_packet_cnt = new int[NN_channel];
 
 final int value_buffer_size = 10000;
+final int rms_window_size = 500;
 
-float [] semg_buffer[] = new float[semg_channel][value_buffer_size];
+float [] processed_semg_value = new float[semg_channel];
+float [] semg_ring_buffer[] = new float[semg_channel][rms_window_size];
 float [] angle_buffer[] = new float[angle_channel][value_buffer_size];
 float [] GT_buffer[] = new float[NN_channel][value_buffer_size];
 float [] NN_buffer[] = new float[NN_channel][value_buffer_size];
@@ -89,7 +91,7 @@ char temp_byte;
 int sample_since_last_send = 0;
 
 final String AR_SERIAL_NAME = "/dev/ttyACM0";
-final String [] NN_SERIAL_NAME = {"/dev/pts/22", "/dev/pts/24"};
+final String [] NN_SERIAL_NAME = {"/dev/pts/25", "/dev/pts/27"};
 
 Serial AR_serial;
 Serial [] NN_serial = new Serial[NN_channel];
@@ -99,6 +101,7 @@ final String [] move_list = {"1: Hold init", "2: Hold init",
                              "3: Move to final", "4: Hold final", "5: Move to init",
                              "6: Hold init", "7: Hold init"
                             };
+
 int sc_current_time = 0;
 int sc_last_time = 0;
 int sc_sample_count = 0;
@@ -107,204 +110,282 @@ int pm_last_time = 0;
 int move_list_index = 0;
 int move_count = 1;
 
+final float [][] TDSEP_matrix = {
+    {1, 0, 0, 0, 0, 0},
+    {0, 1, 0, 0, 0, 0},
+    {0, 0, 1, 0, 0 , 0},
+    {0, 0, 0, 1, 0, 0},
+    {0, 0, 0, 0, 1, 0},
+    {0, 0, 0, 0, 0, 1}
+};
+
+
 void settings() {
-  size(width, height, FX2D);
+    size(width, height, FX2D);
 }
 
 void setup() {
-  println(Serial.list());
+    println(Serial.list());
 
-  // Open NN serial port
-  for (int i = 0; i < NN_channel; ++i) {
+    // Open NN serial port
     try {
-      NN_serial[i] = new Serial(this, NN_SERIAL_NAME[i], 230400);
+        for (int i = 0; i < NN_channel; ++i) {
+            NN_serial[i] = new Serial(this, NN_SERIAL_NAME[i], 230400);
+        }
     } catch (Exception e) {
-      println("Error opening NN port: " + e.getMessage());
-      exit();
+        println("Error opening NN port: " + e.getMessage());
+        exit();
     }
-  }
-  
-  // Open AR serial port
-  try {
-    AR_serial = new Serial(this, AR_SERIAL_NAME, 4000000);
-  } catch (Exception e) {
-    println("Error opening AR port: " + AR_SERIAL_NAME);
-    exit();
-  }
-  int j = 0;
 
-  
+    // Open AR serial port
+    try {
+        AR_serial = new Serial(this, AR_SERIAL_NAME, 4000000);
+    } catch (Exception e) {
+        println("Error opening AR port: " + AR_SERIAL_NAME);
+        exit();
+    }
 
-  // Generate sin wave
-  final float sine_inc = 6.28 / sine_freq;
-  for (int i = 0; i < sine_freq; ++i) {
-    sine_data[i] = sin(sine_inc * i);
-  }
-  
-  resetGraph();
-  frameRate(1000);
+
+    // Generate sin wave
+    final float sine_inc = PI * 2 / sine_freq;
+    for (int i = 0; i < sine_freq; ++i) {
+        sine_data[i] = sin(sine_inc * i);
+    }
+
+    resetGraph();
+    frameRate(1000);
 }
 
 
 void serialEvent(Serial serial) {
 
-  
-  if (serial == AR_serial) {
-    receive_from_AR();
-  } else {
-    for (int i = 0; i < NN_channel; ++i) {
-      if (serial == NN_serial[i])
-        receive_from_NN(i);
+    if (serial == AR_serial) {
+        receive_from_AR();
+    } else {
+        for (int i = 0; i < NN_channel; ++i) {
+            if (serial == NN_serial[i])
+                receive_from_NN(i);
+        }
     }
-  }
-  
-  
-  
+
 }
 
 int sine_wave_idx = 0;
-void send_to_NN() {
-  
-  NN_serial[0].write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(sine_data[sine_wave_idx]).array());
-  NN_serial[1].write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(sine_data[(sine_wave_idx + sine_freq/4) % sine_freq]).array());
-  
-  GT_buffer[0][GT_buffer_idx[0]] = sine_data[sine_wave_idx];
-  GT_buffer[1][GT_buffer_idx[1]] = sine_data[(sine_wave_idx + sine_freq/2) % sine_freq];
-  
-  GT_buffer_idx[0] = (GT_buffer_idx[0] + 1) % value_buffer_size; 
-  GT_buffer_idx[1] = (GT_buffer_idx[1] + 1) % value_buffer_size; 
-  
-  sine_wave_idx = (sine_wave_idx + 1) % sine_freq;
+void send_to_NN_sine_test() {
+
+    NN_serial[0].write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(sine_data[sine_wave_idx]).array());
+    NN_serial[1].write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(sine_data[(sine_wave_idx + sine_freq / 4) % sine_freq]).array());
+
+    GT_buffer[0][GT_buffer_idx[0]] = sine_data[sine_wave_idx];
+    GT_buffer[1][GT_buffer_idx[1]] = sine_data[(sine_wave_idx + sine_freq / 4) % sine_freq];
+
+    GT_buffer_idx[0] = (GT_buffer_idx[0] + 1) % value_buffer_size;
+    GT_buffer_idx[1] = (GT_buffer_idx[1] + 1) % value_buffer_size;
+
+    sine_wave_idx = (sine_wave_idx + 1) % sine_freq;
 }
+
+void send_to_NN(float [] p_semg) {
+    
+    /*
+    for (int ch = 0; ch < semg_channel; ++ch) {
+        NN_serial[0].write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(p_semg[ch]).array());
+        NN_serial[1].write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putFloat(p_semg[ch]).array());
+    }
+    */
+    
+    ByteBuffer data_buffer = ByteBuffer.allocate(4 * semg_channel).order(ByteOrder.LITTLE_ENDIAN);
+    
+    for (float v : p_semg)
+        data_buffer.putFloat(v);
+        
+    NN_serial[0].write(data_buffer.array());  
+    NN_serial[1].write(data_buffer.array());
+    
+    final int return_channel_0 = 0;
+    GT_buffer[0][GT_buffer_idx[0]] = p_semg[return_channel_0] + 100;
+    GT_buffer[1][GT_buffer_idx[1]] = p_semg[return_channel_0] + 100;
+
+    GT_buffer_idx[0] = (GT_buffer_idx[0] + 1) % value_buffer_size;
+    GT_buffer_idx[1] = (GT_buffer_idx[1] + 1) % value_buffer_size; 
+    
+}
+
 
 // Note that NN_value for different channel will not be in sync, unlike GT
 void receive_from_NN(int ch) {
-  while (NN_serial[ch].available() > 0) {
-    temp_byte = (char) NN_serial[ch].read();
+    while (NN_serial[ch].available() > 0) {
+        temp_byte = (char) NN_serial[ch].read();
 
-    NN_packet[ch][NN_packet_cnt[ch]] = temp_byte;
-   
-    ++NN_packet_cnt[ch];
+        NN_packet[ch][NN_packet_cnt[ch]] = temp_byte;
 
-    if (NN_packet_cnt[ch] >= NN_packet_len) {
-      // https://stackoverflow.com/questions/4513498/java-bytes-to-floats-ints
-      NN_value[ch] =  Float.intBitsToFloat( ((NN_packet[ch][3] & 0xFF) << 24) |
-                                            ((NN_packet[ch][2] & 0xFF) << 16) |
-                                            ((NN_packet[ch][1] & 0xFF) << 8)  |
-                                            (NN_packet[ch][0] & 0xFF));
-      
-      NN_packet_cnt[ch] = 0;
-      
-      NN_buffer[ch][NN_buffer_idx[ch]] = NN_value[ch];
-      NN_buffer_idx[ch] = (NN_buffer_idx[ch] + 1) % value_buffer_size;
+        ++NN_packet_cnt[ch];
+
+        if (NN_packet_cnt[ch] >= NN_packet_len) {
+            // https://stackoverflow.com/questions/4513498/java-bytes-to-floats-ints
+            NN_value[ch] =  Float.intBitsToFloat( ((NN_packet[ch][3] & 0xFF) << 24) |
+                                                  ((NN_packet[ch][2] & 0xFF) << 16) |
+                                                  ((NN_packet[ch][1] & 0xFF) << 8)  |
+                                                  (NN_packet[ch][0] & 0xFF));
+            //println("receive from NN: " + ch);
+            NN_packet_cnt[ch] = 0;
+
+            NN_buffer[ch][NN_buffer_idx[ch]] = NN_value[ch];
+            NN_buffer_idx[ch] = (NN_buffer_idx[ch] + 1) % value_buffer_size;
+            
+            sampleCount();
+        }
     }
-  }
 }
 
 void receive_from_AR() {
-  while (AR_serial.available() > 0) {
-    temp_byte = (char) AR_serial.read();
+    while (AR_serial.available() > 0) {
+        temp_byte = (char) AR_serial.read();
 
-    if (AR_state == SerialState.HOLD) {
-      if (temp_byte == semg_alignment_packet[AR_align_cnt]) {
-        if (AR_align_cnt == 0)
-          AR_state = SerialState.SEMG_ALIGN;
-        ++AR_align_cnt;
-      } else if (temp_byte == quat_alignment_packet[AR_align_cnt]) {
-        if (AR_align_cnt == 0)
-          AR_state = SerialState.MPU_ALIGN;
-        ++AR_align_cnt;
-      }
+        if (AR_state == SerialState.HOLD) {
+            if (temp_byte == semg_alignment_packet[AR_align_cnt]) {
+                if (AR_align_cnt == 0)
+                    AR_state = SerialState.SEMG_ALIGN;
+                ++AR_align_cnt;
+            } else if (temp_byte == quat_alignment_packet[AR_align_cnt]) {
+                if (AR_align_cnt == 0)
+                    AR_state = SerialState.MPU_ALIGN;
+                ++AR_align_cnt;
+            }
 
-      if (AR_align_cnt >= alignment_packet_len) {
-        if (AR_state == SerialState.SEMG_ALIGN)
-          AR_state = SerialState.SEMG_READ;
-        else if (AR_state == SerialState.MPU_ALIGN)
-          AR_state = SerialState.MPU_READ;
+            if (AR_align_cnt >= alignment_packet_len) {
+                if (AR_state == SerialState.SEMG_ALIGN)
+                    AR_state = SerialState.SEMG_READ;
+                else if (AR_state == SerialState.MPU_ALIGN)
+                    AR_state = SerialState.MPU_READ;
 
-        AR_align_cnt = 0;
-      }
-    } else if (AR_state == SerialState.SEMG_READ) {
-      semg_packet[AR_packet_cnt] = temp_byte;
+                AR_align_cnt = 0;
+            }
+        } else if (AR_state == SerialState.SEMG_READ) {
+            semg_packet[AR_packet_cnt] = temp_byte;
 
-      ++AR_packet_cnt;
+            ++AR_packet_cnt;
 
-      if (AR_packet_cnt >= semg_packet_len) {
-        for (int i = 0; i < semg_channel; ++i) {
-          semg_values[i] = (semg_packet[2 * i + 1] << 8) | semg_packet[2 * i];
-          semg_buffer[i][semg_buffer_idx] = semg_values[i];
+            if (AR_packet_cnt >= semg_packet_len) {
+                for (int i = 0; i < semg_channel; ++i) {
+                    semg_values[i] = (semg_packet[2 * i + 1] << 8) | semg_packet[2 * i];
+                    semg_ring_buffer[i][semg_buffer_idx] = semg_values[i];
+                }
+
+                semg_buffer_idx = (semg_buffer_idx + 1) % rms_window_size;
+
+                AR_state = SerialState.HOLD;
+                AR_packet_cnt = 0;
+
+                processed_semg_value = calculate_semg_rms(semg_ring_buffer, rms_window_size);
+                processed_semg_value = calculate_semg_lpf(processed_semg_value);
+                processed_semg_value = apply_demix_matrix(processed_semg_value, TDSEP_matrix);
+
+                if (sample_since_last_send > downsample_ratio) {
+                    //send_to_NN_sine_test();
+                    send_to_NN(processed_semg_value);
+                    sample_since_last_send = 0;
+                }
+
+                ++sample_since_last_send;
+
+                if (quat_tared)
+                    printMove();
+                //else
+                    //sampleCount();
+            }
+
+        } else if (AR_state == SerialState.MPU_READ) {
+            quat_packet[AR_packet_cnt] = temp_byte;
+
+            ++AR_packet_cnt;
+
+            if (AR_packet_cnt >= quat_packet_len) {
+                for (int i = 0; i < quat_channel; ++i) {
+                    // https://stackoverflow.com/questions/4513498/java-bytes-to-floats-ints
+                    quat_values[i] =  Float.intBitsToFloat( ((quat_packet[i * 4 + 3] & 0xFF) << 24) |
+                                                            ((quat_packet[i * 4 + 2] & 0xFF) << 16) |
+                                                            ((quat_packet[i * 4 + 1] & 0xFF) << 8)  |
+                                                            (quat_packet[i * 4] & 0xFF));
+                }
+
+                quat_convert();
+
+                for (int i = 0; i < angle_channel; ++i)
+                    angle_buffer[i][angle_buffer_idx] = (int) angle_values[i];
+                angle_buffer_idx = (angle_buffer_idx + 1) % value_buffer_size;
+
+                AR_state = SerialState.HOLD;
+                AR_packet_cnt = 0;
+            }
         }
-
-        semg_buffer_idx = (semg_buffer_idx + 1) % value_buffer_size;
-
-        AR_state = SerialState.HOLD;
-        AR_packet_cnt = 0;
-
-        if (sample_since_last_send > downsample_ratio) {
-          send_to_NN();
-          sample_since_last_send = 0;
-        }
-        
-        ++sample_since_last_send;
-        
-        if (quat_tared)
-          printMove();
-        else
-          sampleCount();
-      }
-      
-    } else if (AR_state == SerialState.MPU_READ) {
-      quat_packet[AR_packet_cnt] = temp_byte;
-
-      ++AR_packet_cnt;
-
-      if (AR_packet_cnt >= quat_packet_len) {
-        for (int i = 0; i < quat_channel; ++i) {
-          // https://stackoverflow.com/questions/4513498/java-bytes-to-floats-ints
-          quat_values[i] =  Float.intBitsToFloat( ((quat_packet[i * 4 + 3] & 0xFF) << 24) |
-                                                  ((quat_packet[i * 4 + 2] & 0xFF) << 16) |
-                                                  ((quat_packet[i * 4 + 1] & 0xFF) << 8)  |
-                                                  (quat_packet[i * 4] & 0xFF));
-        }
-
-        quat_convert();
-
-        for (int i = 0; i < angle_channel; ++i)
-          angle_buffer[i][angle_buffer_idx] = (int) angle_values[i];
-        angle_buffer_idx = (angle_buffer_idx + 1) % value_buffer_size;
-          
-        AR_state = SerialState.HOLD;
-        AR_packet_cnt = 0;
-      }
     }
-  }
 }
 
 void draw() {
-  drawAll();
+    drawAll();
 }
 
 
 void printMove() {
-  pm_current_time = millis();
-  if (pm_current_time - pm_last_time > 1000) {
-    println(move_list[move_list_index] + " --> " + move_count);
+    pm_current_time = millis();
+    if (pm_current_time - pm_last_time > 1000) {
+        println(move_list[move_list_index] + " --> " + move_count);
 
-    pm_last_time = millis();
-    move_list_index = (move_list_index + 1) % move_list.length;
+        pm_last_time = millis();
+        move_list_index = (move_list_index + 1) % move_list.length;
 
-    if (move_list_index == 0)
-      ++move_count;
-  }
+        if (move_list_index == 0)
+            ++move_count;
+    }
 }
 
 void sampleCount() {
-  sc_sample_count++;
-  sc_current_time = millis();
-  if (sc_current_time - sc_last_time > 1000) {
-    println("SPS: " + sc_sample_count);
+    sc_sample_count++;
+    sc_current_time = millis();
+    if (sc_current_time - sc_last_time > 1000) {
+        println("SPS: " + sc_sample_count);
 
-    sc_last_time = millis();
-    sc_sample_count = 0;
-  }
+        sc_last_time = millis();
+        sc_sample_count = 0;
+    }
+}
+
+
+float[] calculate_semg_rms(float [] semg_buff[], final int win_size) {
+
+    float [] rms = new float[semg_channel];
+
+    for (int ch = 0; ch < semg_channel; ++ch)
+        for (int i = 0; i < rms_window_size ; ++i) {
+            rms[ch] += semg_buff[ch][i] * semg_buff[ch][i];
+            rms[ch] = sqrt(rms[ch] / win_size);
+        }
+
+    return rms;
+}
+
+float[] calculate_semg_lpf(float [] val) {
+
+    float [] lpf_val = new float[semg_channel];
+
+    for (int ch = 0; ch < semg_channel; ++ch) {
+        lpf_val[ch] = LPF_step(ch, val[ch]);
+    }
+
+    return lpf_val;
+}
+
+
+float[] apply_demix_matrix(float [] val, float [][] mat) {
+    
+    float [] demix_val = new float[semg_channel];
+
+    for (int i = 0; i < semg_channel; ++i) {
+        for (int j = 0; j < semg_channel; ++j) {
+            demix_val[i] += mat[i][j] * val[j];
+        }
+    }
+    
+    return demix_val;
 }

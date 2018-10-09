@@ -105,25 +105,44 @@ int main(int argc, char const *argv[])
 		if (byte_idx == 0 && packet_idx == 0)
 			gettimeofday(&last_time, NULL);
 
-		rdlen = read(fd, &packet_array, in_packet_num * packet_size);	// Read one byte
-		if (rdlen != in_packet_num * packet_size) {
-			printf("rdlen != packet_num * packet_size\n");
-			return 0;
-		}
-		
-		wlen = write(fd,
-		             packet_array[return_channel].byte_array,
-		             out_packet_len);
-		
-		gettimeofday(&current_time, NULL);
+		rdlen = read(fd, &temp_byte, 1);	// Read one byte
+		if (rdlen > 0) {
 
-		double secs = (double)(current_time.tv_usec - last_time.tv_usec) / 1000000 + (double)(current_time.tv_sec - last_time.tv_sec);
-		printf("took %lf\n", secs);
-		//last_time = current_time;
-		//printf("%f\n", packet_array[return_channel].float_value);
-		if (wlen != out_packet_len) {
-			printf("Error from write: %d, %d\n", wlen, errno);
-			return 999;
+			temp_packet.byte_array[byte_idx] = temp_byte;
+
+			++byte_idx;
+
+			if (byte_idx >= in_packet_len) {
+				byte_idx = 0;
+
+				packet_array[packet_idx] = temp_packet;
+
+				++packet_idx;
+
+				if (packet_idx >= in_packet_num) {
+					packet_idx = 0;
+
+					wlen = write(fd,
+					             packet_array[return_channel].byte_array,
+					             out_packet_len);
+					
+					gettimeofday(&current_time, NULL);
+
+					double secs = (double)(current_time.tv_usec - last_time.tv_usec) / 1000000 + (double)(current_time.tv_sec - last_time.tv_sec);
+					printf("took %lf\n", secs);
+					//last_time = current_time;
+					//printf("%f\n", packet_array[return_channel].float_value);
+					if (wlen != out_packet_len) {
+						printf("Error from write: %d, %d\n", wlen, errno);
+						return 999;
+					}
+				}
+			}
+
+
+
+		} else if (rdlen < 0) {
+			printf("Error from read: %d: %s\n", rdlen, strerror(errno));
 		}
 		/* repeat read to get full message */
 	} while (1);

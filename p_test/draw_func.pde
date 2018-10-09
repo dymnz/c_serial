@@ -7,8 +7,10 @@ final int[][] GT_color_list = {{255, 130, 130}, {130, 255, 130}};
 final int [] RPY_minValue = {-180, -180, -180};
 final int [] RPY_maxValue = {+180, +180, +180};
 */
-final int [] RPY_minValue = { -1, -1};
-final int [] RPY_maxValue = { +1, +1};
+
+final int semg_max_val = 2048 / 4;
+final int [] RPY_minValue = { -semg_max_val, -semg_max_val};
+final int [] RPY_maxValue = { +semg_max_val, +semg_max_val};
 
 int last_draw_idx = 0;
 int max_valid_buffer_idx = 0;
@@ -28,8 +30,10 @@ void drawAll() {
   while (last_draw_idx < max_valid_buffer_idx) {
     // Sanity check for synced NN-GT
     for (int ch = 0; ch < NN_channel; ++ch) {
-      if (NN_buffer_idx[ch] != max_valid_buffer_idx || GT_buffer_idx[ch] != max_valid_buffer_idx) {
-        println("GT_buffer_idx!=NN_buffer_idx");
+      if (NN_buffer_idx[ch] < max_valid_buffer_idx || GT_buffer_idx[ch] < NN_buffer_idx[ch]) {
+        println("max_valid_buffer_idx: " + max_valid_buffer_idx);
+        println("NN_buffer_idx: " + NN_buffer_idx[ch]);
+        println("GT_buffer_idx: " + GT_buffer_idx[ch]);
         exit();
       }
     }
