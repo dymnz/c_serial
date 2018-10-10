@@ -8,9 +8,9 @@ final int [] RPY_minValue = {-180, -180, -180};
 final int [] RPY_maxValue = {+180, +180, +180};
 */
 
-final int semg_max_val = 2048 / 4;
-final int [] RPY_minValue = { -semg_max_val, -semg_max_val};
-final int [] RPY_maxValue = { +semg_max_val, +semg_max_val};
+final int semg_max_val = 2048 * 2;
+final int [] RPY_minValue = { 0, 0};
+final int [] RPY_maxValue = { 4095, 4095};
 
 int last_draw_idx = 0;
 int max_valid_buffer_idx = 0;
@@ -72,6 +72,9 @@ void drawAll() {
 void resetGraph() {
   background(255);
   strokeWeight(2);
+  
+  stroke(0); 
+  line(0, height / 2, width, height / 2);
 }
 
 

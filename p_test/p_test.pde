@@ -34,7 +34,7 @@ final int quat_channel = 4;
 final int quat_packet_byte = 4;
 
 final int semg_sample_rate = 2700;
-final int target_sample_rate = 35;
+final int target_sample_rate = 50;
 final int downsample_ratio = semg_sample_rate / target_sample_rate;
 
 
@@ -91,7 +91,7 @@ char temp_byte;
 int sample_since_last_send = 0;
 
 final String AR_SERIAL_NAME = "/dev/ttyACM0";
-final String [] NN_SERIAL_NAME = {"/dev/pts/25", "/dev/pts/27"};
+final String [] NN_SERIAL_NAME = {"/dev/pts/25", "/dev/pts/22"};
 
 Serial AR_serial;
 Serial [] NN_serial = new Serial[NN_channel];
@@ -179,8 +179,10 @@ void send_to_NN_sine_test() {
     GT_buffer[0][GT_buffer_idx[0]] = sine_data[sine_wave_idx];
     GT_buffer[1][GT_buffer_idx[1]] = sine_data[(sine_wave_idx + sine_freq / 4) % sine_freq];
 
-    GT_buffer_idx[0] = (GT_buffer_idx[0] + 1) % value_buffer_size;
-    GT_buffer_idx[1] = (GT_buffer_idx[1] + 1) % value_buffer_size;
+    //GT_buffer_idx[0] = (GT_buffer_idx[0] + 1) % value_buffer_size;
+    //GT_buffer_idx[1] = (GT_buffer_idx[1] + 1) % value_buffer_size; 
+    GT_buffer_idx[0] = GT_buffer_idx[0] + 1;
+    GT_buffer_idx[1] = GT_buffer_idx[1] + 1; 
 
     sine_wave_idx = (sine_wave_idx + 1) % sine_freq;
 }
@@ -206,8 +208,10 @@ void send_to_NN(float [] p_semg) {
     GT_buffer[0][GT_buffer_idx[0]] = p_semg[return_channel_0] + 100;
     GT_buffer[1][GT_buffer_idx[1]] = p_semg[return_channel_0] + 100;
 
-    GT_buffer_idx[0] = (GT_buffer_idx[0] + 1) % value_buffer_size;
-    GT_buffer_idx[1] = (GT_buffer_idx[1] + 1) % value_buffer_size; 
+    //GT_buffer_idx[0] = (GT_buffer_idx[0] + 1) % value_buffer_size;
+    //GT_buffer_idx[1] = (GT_buffer_idx[1] + 1) % value_buffer_size; 
+    GT_buffer_idx[0] = GT_buffer_idx[0] + 1;
+    GT_buffer_idx[1] = GT_buffer_idx[1] + 1; 
     
 }
 
@@ -230,10 +234,12 @@ void receive_from_NN(int ch) {
             //println("receive from NN: " + ch);
             NN_packet_cnt[ch] = 0;
 
-            NN_buffer[ch][NN_buffer_idx[ch]] = NN_value[ch];
-            NN_buffer_idx[ch] = (NN_buffer_idx[ch] + 1) % value_buffer_size;
+            NN_buffer[ch][NN_buffer_idx[ch] % value_buffer_size] = NN_value[ch];
+            //NN_buffer_idx[ch] = (NN_buffer_idx[ch] + 1) % value_buffer_size;
+            NN_buffer_idx[ch] = NN_buffer_idx[ch] + 1;
             
             sampleCount();
+
         }
     }
 }
@@ -278,8 +284,8 @@ void receive_from_AR() {
                 AR_packet_cnt = 0;
 
                 processed_semg_value = calculate_semg_rms(semg_ring_buffer, rms_window_size);
-                processed_semg_value = calculate_semg_lpf(processed_semg_value);
-                processed_semg_value = apply_demix_matrix(processed_semg_value, TDSEP_matrix);
+                //processed_semg_value = calculate_semg_lpf(processed_semg_value);  /* Don't seem to be working, may be skipped? */
+                //processed_semg_value = apply_demix_matrix(processed_semg_value, TDSEP_matrix);
 
                 if (sample_since_last_send > downsample_ratio) {
                     //send_to_NN_sine_test();
@@ -291,8 +297,8 @@ void receive_from_AR() {
 
                 if (quat_tared)
                     printMove();
-                //else
-                    //sampleCount();
+               // else
+                   // sampleCount();
             }
 
         } else if (AR_state == SerialState.MPU_READ) {
@@ -356,12 +362,12 @@ float[] calculate_semg_rms(float [] semg_buff[], final int win_size) {
 
     float [] rms = new float[semg_channel];
 
-    for (int ch = 0; ch < semg_channel; ++ch)
+    for (int ch = 0; ch < semg_channel; ++ch) {
         for (int i = 0; i < rms_window_size ; ++i) {
             rms[ch] += semg_buff[ch][i] * semg_buff[ch][i];
-            rms[ch] = sqrt(rms[ch] / win_size);
         }
-
+        rms[ch] = sqrt(rms[ch] / win_size);
+    }
     return rms;
 }
 

@@ -1,0 +1,6 @@
+*.exe
+*
+!/**/
+!*.*
+!verify_2opt
+!makefile
