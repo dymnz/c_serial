@@ -34,7 +34,7 @@ final int quat_channel = 4;
 final int quat_packet_byte = 4;
 
 final int semg_sample_rate = 2700;
-final int target_sample_rate = 50;
+final int target_sample_rate =35;
 final int downsample_ratio = semg_sample_rate / target_sample_rate;
 
 
@@ -67,6 +67,7 @@ final int value_buffer_size = 10000;
 final int rms_window_size = 500;
 
 float [] processed_semg_value = new float[semg_channel];
+float [] mean_semg_value = {2048, 2048, 2048, 2048, 2048, 2048};
 float [] semg_ring_buffer[] = new float[semg_channel][rms_window_size];
 float [] angle_buffer[] = new float[angle_channel][value_buffer_size];
 float [] GT_buffer[] = new float[NN_channel][value_buffer_size];
@@ -91,7 +92,7 @@ char temp_byte;
 int sample_since_last_send = 0;
 
 final String AR_SERIAL_NAME = "/dev/ttyACM0";
-final String [] NN_SERIAL_NAME = {"/dev/pts/25", "/dev/pts/22"};
+final String [] NN_SERIAL_NAME = {"/dev/pts/25", "/dev/pts/27"};
 
 Serial AR_serial;
 Serial [] NN_serial = new Serial[NN_channel];
@@ -110,6 +111,9 @@ int pm_last_time = 0;
 int move_list_index = 0;
 int move_count = 1;
 
+/*
+final float [] semg_normalization_max = {9.1804, 5.4334, 24.9513,    8.5455,   14.4549,    7.3071};
+final float [] semg_normalization_min = {-3.67480010386515, -9.99041157741216, 0.000680513958738939, -5.24100740589618};
 final float [][] TDSEP_matrix = {
     {1, 0, 0, 0, 0, 0},
     {0, 1, 0, 0, 0, 0},
@@ -118,7 +122,19 @@ final float [][] TDSEP_matrix = {
     {0, 0, 0, 0, 1, 0},
     {0, 0, 0, 0, 0, 1}
 };
+*/
 
+///*
+final float [] semg_normalization_max = {9.18041,5.43337,24.9513,8.54547,14.4549,7.30713};
+final float [] semg_normalization_min = {  -5.16016,-0.0968648,  -8.33716,  -2.09257,  -11.2247,  -4.21584};
+final float [][] TDSEP_matrix = 
+{{0.006619,-0.017551,-0.007456,0.003243,-0.003471,0.028042},
+{0.006228,0.002114,-0.001121,-0.000366,-0.001282,0.005107},
+{0.007672,-0.009124,0.045514,0.002012,-0.038280,-0.011337},
+{-0.002886,-0.002350,0.002571,0.004218,0.002164,-0.000767},
+{0.039064,-0.025458,0.030922,-0.018745,0.026040,-0.033660},
+{-0.024878,0.000792,0.017771,-0.011882,0.004427,0.026971}};
+//*/
 
 void settings() {
     size(width, height, FX2D);
@@ -238,7 +254,7 @@ void receive_from_NN(int ch) {
             //NN_buffer_idx[ch] = (NN_buffer_idx[ch] + 1) % value_buffer_size;
             NN_buffer_idx[ch] = NN_buffer_idx[ch] + 1;
             
-            sampleCount();
+            //sampleCount();
 
         }
     }
@@ -273,9 +289,9 @@ void receive_from_AR() {
             ++AR_packet_cnt;
 
             if (AR_packet_cnt >= semg_packet_len) {
-                for (int i = 0; i < semg_channel; ++i) {
-                    semg_values[i] = (semg_packet[2 * i + 1] << 8) | semg_packet[2 * i];
-                    semg_ring_buffer[i][semg_buffer_idx] = semg_values[i];
+                for (int ch = 0; ch < semg_channel; ++ch) {
+                    semg_values[ch] = (semg_packet[2 * ch + 1] << 8) | semg_packet[2 * ch];
+                    semg_ring_buffer[ch][semg_buffer_idx] = semg_values[ch]; // TODO: Change 2048 to a dynamic mean value
                 }
 
                 semg_buffer_idx = (semg_buffer_idx + 1) % rms_window_size;
@@ -283,10 +299,14 @@ void receive_from_AR() {
                 AR_state = SerialState.HOLD;
                 AR_packet_cnt = 0;
 
-                processed_semg_value = calculate_semg_rms(semg_ring_buffer, rms_window_size);
-                //processed_semg_value = calculate_semg_lpf(processed_semg_value);  /* Don't seem to be working, may be skipped? */
-                //processed_semg_value = apply_demix_matrix(processed_semg_value, TDSEP_matrix);
 
+                /* Pre-process */
+                mean_semg_value = calculate_semg_mean(semg_ring_buffer, rms_window_size);
+                processed_semg_value = calculate_semg_rms_rmMean(semg_ring_buffer, rms_window_size, mean_semg_value);
+                //processed_semg_value = calculate_semg_lpf(processed_semg_value);  /* Don't seem to be working, may be skipped? */
+                processed_semg_value = apply_demix_matrix(processed_semg_value, TDSEP_matrix);
+                processed_semg_value = semg_normalization(processed_semg_value, semg_normalization_max, semg_normalization_min);
+                
                 if (sample_since_last_send > downsample_ratio) {
                     //send_to_NN_sine_test();
                     send_to_NN(processed_semg_value);
@@ -330,6 +350,7 @@ void receive_from_AR() {
 
 void draw() {
     drawAll();
+    sampleCount();
 }
 
 
@@ -357,14 +378,26 @@ void sampleCount() {
     }
 }
 
+float[] calculate_semg_mean(float [] semg_buff[], final int win_size) {
+    
+    float [] mean = new float[semg_channel];
 
-float[] calculate_semg_rms(float [] semg_buff[], final int win_size) {
+    for (int ch = 0; ch < semg_channel; ++ch) {
+        for (int i = 0; i < win_size ; ++i) {
+            mean[ch] += semg_buff[ch][i];
+        }
+        mean[ch] = mean[ch] / win_size;
+    }
+    return mean; 
+}
+
+float[] calculate_semg_rms_rmMean(float [] semg_buff[], final int win_size, float [] mean_val) {
 
     float [] rms = new float[semg_channel];
 
     for (int ch = 0; ch < semg_channel; ++ch) {
-        for (int i = 0; i < rms_window_size ; ++i) {
-            rms[ch] += semg_buff[ch][i] * semg_buff[ch][i];
+        for (int i = 0; i < win_size ; ++i) {
+            rms[ch] += (semg_buff[ch][i] - mean_val[ch]) * (semg_buff[ch][i] - mean_val[ch]);
         }
         rms[ch] = sqrt(rms[ch] / win_size);
     }
@@ -394,4 +427,15 @@ float[] apply_demix_matrix(float [] val, float [][] mat) {
     }
     
     return demix_val;
+}
+
+float[] semg_normalization(float [] val, float [] max_val, float [] min_val) {
+    
+    float [] norm_val = new float[semg_channel];
+    
+    for (int ch = 0; ch < semg_channel; ++ch) {
+        norm_val[ch] = val[ch] / (max_val[ch] - min_val[ch]);
+    }
+    
+    return norm_val;
 }

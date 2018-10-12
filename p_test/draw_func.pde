@@ -9,8 +9,8 @@ final int [] RPY_maxValue = {+180, +180, +180};
 */
 
 final int semg_max_val = 2048 * 2;
-final int [] RPY_minValue = { 0, 0};
-final int [] RPY_maxValue = { 4095, 4095};
+final int [] RPY_minValue = { -1, -1};
+final int [] RPY_maxValue = { 1, 1};
 
 int last_draw_idx = 0;
 int max_valid_buffer_idx = 0;
